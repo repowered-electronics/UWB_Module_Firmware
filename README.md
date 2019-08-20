@@ -1,0 +1,1 @@
+This is the firmware for our DWM1000 based localization module. The firmware is for the STM32F103C8 series microcontroller. 
