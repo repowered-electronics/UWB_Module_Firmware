@@ -20,6 +20,7 @@
 
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -85,8 +86,6 @@ SPI_HandleTypeDef hspi1;
 UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
-PCD_HandleTypeDef hpcd_USB_FS;
-
 /* USER CODE BEGIN PV */
 static dwt_config_t config = {
     2,               /* Channel number. */
@@ -141,7 +140,6 @@ static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_USB_PCD_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -183,7 +181,7 @@ int main(void)
   MX_SPI1_Init();
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
-  MX_USB_PCD_Init();
+  MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
 #ifdef BEACON
     /* Setup anchor ID's, our system has 3 */
@@ -333,7 +331,7 @@ int main(void)
 
   		 int rcv_len = receive_frame(rx_buffer, FRAME_LEN_MAX, 500);
   		 if(rcv_len > 0){
-  			 HAL_GPIO_WritePin(GPIOB, CAN_OK_LED_Pin, GPIO_PIN_SET);
+  			 HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin, GPIO_PIN_SET);
   			 switch(rx_buffer[MAC_SIZE_EXPECTED]){
   			 case POLL:{
   				 anchor_stamps.t_rp = get_rx_timestamp();
@@ -375,7 +373,7 @@ int main(void)
   				 debug(&huart1, "Unrecognized type received\r");
   			 	 break;}
   			 }
-  			 HAL_GPIO_WritePin(GPIOB, CAN_OK_LED_Pin, GPIO_PIN_RESET);
+  			 HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin, GPIO_PIN_RESET);
   		 }else{
   			 debug(&huart1, "Timed out\r");
   		 }
@@ -534,37 +532,6 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
-  * @brief USB Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USB_PCD_Init(void)
-{
-
-  /* USER CODE BEGIN USB_Init 0 */
-
-  /* USER CODE END USB_Init 0 */
-
-  /* USER CODE BEGIN USB_Init 1 */
-
-  /* USER CODE END USB_Init 1 */
-  hpcd_USB_FS.Instance = USB;
-  hpcd_USB_FS.Init.dev_endpoints = 8;
-  hpcd_USB_FS.Init.speed = PCD_SPEED_FULL;
-  hpcd_USB_FS.Init.low_power_enable = DISABLE;
-  hpcd_USB_FS.Init.lpm_enable = DISABLE;
-  hpcd_USB_FS.Init.battery_charging_enable = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_FS) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USB_Init 2 */
-
-  /* USER CODE END USB_Init 2 */
-
-}
-
-/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -583,7 +550,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOB, DW_NSS_Pin|DW_RESET_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin|USB_LED_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin|USB_LED_Pin|USB_PULLUP_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : TXLED_Pin RXOKLED_Pin */
   GPIO_InitStruct.Pin = TXLED_Pin|RXOKLED_Pin;
@@ -591,8 +558,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DW_NSS_Pin RANGING_LED_Pin USB_LED_Pin */
-  GPIO_InitStruct.Pin = DW_NSS_Pin|RANGING_LED_Pin|USB_LED_Pin;
+  /*Configure GPIO pins : DW_NSS_Pin RANGING_LED_Pin USB_LED_Pin USB_PULLUP_Pin */
+  GPIO_InitStruct.Pin = DW_NSS_Pin|RANGING_LED_Pin|USB_LED_Pin|USB_PULLUP_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;

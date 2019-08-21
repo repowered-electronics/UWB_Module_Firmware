@@ -143,14 +143,14 @@ void u_delay(int usec);
 #define RANGING_LED_GPIO_Port GPIOB
 #define USB_LED_Pin GPIO_PIN_15
 #define USB_LED_GPIO_Port GPIOB
+#define USB_PULLUP_Pin GPIO_PIN_6
+#define USB_PULLUP_GPIO_Port GPIOB
 /* USER CODE BEGIN Private defines */
-
-/* USER CODE END Private defines */
-
 #include "deca_device_api.h"
 #include "deca_regs.h"
 #include "deca_spi.h"
 #include "port.h"
+/* USER CODE END Private defines */
 
 #ifdef __cplusplus
 }
