@@ -91,7 +91,7 @@
 extern USBD_CDC_ItfTypeDef USBD_Interface_fops_FS;
 
 /* USER CODE BEGIN EXPORTED_VARIABLES */
-
+uint32_t usb_rx_len;
 /* USER CODE END EXPORTED_VARIABLES */
 
 /**

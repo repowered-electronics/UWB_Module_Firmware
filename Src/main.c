@@ -1,21 +1,21 @@
 /* USER CODE BEGIN Header */
 /**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * <h2><center>&copy; Copyright (c) 2019 STMicroelectronics.
-  * All rights reserved.</center></h2>
-  *
-  * This software component is licensed by ST under BSD 3-Clause license,
-  * the "License"; You may not use this file except in compliance with the
-  * License. You may obtain a copy of the License at:
-  *                        opensource.org/licenses/BSD-3-Clause
-  *
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file           : main.c
+ * @brief          : Main program body
+ ******************************************************************************
+ * @attention
+ *
+ * <h2><center>&copy; Copyright (c) 2019 STMicroelectronics.
+ * All rights reserved.</center></h2>
+ *
+ * This software component is licensed by ST under BSD 3-Clause license,
+ * the "License"; You may not use this file except in compliance with the
+ * License. You may obtain a copy of the License at:
+ *                        opensource.org/licenses/BSD-3-Clause
+ *
+ ******************************************************************************
+ */
 /* USER CODE END Header */
 
 /* Includes ------------------------------------------------------------------*/
@@ -35,32 +35,6 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-#define TX_BUFFER_SIZE 		1024
-
-/* Index to access to sequence number of the blink frame in the tx_msg array. */
-#define BLINK_FRAME_SN_IDX 	1
-
-/* Inter-frame delay period, in milliseconds. */
-#define TX_DELAY_MS 		1000
-
-#define FRAME_LEN_MAX 		127
-
-#define NUMBER_OF_ANCHORS 	3
-
-#define DELAY_BEFORE_TX 	0
-
-#define SAMPLES_PER_POINT 	2
-/* Change to match the device you're programming */
-#define XTAL_TRIM 			15
-
-/* Change to match which device you're programming */
-#define TX_ANT_DLY 			16442
-#define RX_ANT_DLY 			16442
-
-/* weights for our confidence calculation */
-#define K1 					100.0
-#define K2 					1.0
-
 /* CAN ID, change to desired value if flashing for the first time */
 #define SELF_CAN_ID 		0x01
 
@@ -73,6 +47,16 @@
 /* ID of this device will be the CAN bus id, because why not */
 #define SELF_ID 			SELF_CAN_ID
 #endif
+
+#define IF_TYPE_USB 	0x01
+#define IF_TYPE_UART 	0x02
+
+/* RX Timeout in milliseconds */
+#define RX_TIMEOUT 			50
+
+/* Broadcast period in milliseconds */
+#define ANCHOR_BROADCAST_PERIOD 250
+
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -87,50 +71,56 @@ UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+char debug_buf[512];
+
 static dwt_config_t config = {
-    2,               /* Channel number. */
-    DWT_PRF_64M,     /* Pulse repetition frequency. */
-    DWT_PLEN_128,   /* Preamble length. Used in TX only. */
-    DWT_PAC8,       /* Preamble acquisition chunk size. Used in RX only. */
-    9,               /* TX preamble code. Used in TX only. */
-    9,               /* RX preamble code. Used in RX only. */
-    0,               /* 0 to use standard SFD, 1 to use non-standard SFD. */
-    DWT_BR_6M8,      /* Data rate. */
-    DWT_PHRMODE_STD, /* PHY header mode. */
-    (1025 + 64)    	 /* SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only. */
+		2,               /* Channel number. */
+		DWT_PRF_64M,     /* Pulse repetition frequency. */
+		DWT_PLEN_128,   /* Preamble length. Used in TX only. */
+		DWT_PAC8,       /* Preamble acquisition chunk size. Used in RX only. */
+		9,               /* TX preamble code. Used in TX only. */
+		9,               /* RX preamble code. Used in RX only. */
+		0,               /* 0 to use standard SFD, 1 to use non-standard SFD. */
+		DWT_BR_6M8,      /* Data rate. */
+		DWT_PHRMODE_STD, /* PHY header mode. */
+		(1025 + 64)    	 /* SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only. */
 };
 
 DistanceFrame anchors[NUMBER_OF_ANCHORS];
 
-//uint8_t tx_msg[] = {0xC5, 0, 'D', 'E', 'C', 'A', 'W', 'A', 'V', 'E', 0, 0};
-
-int size = 0;
-uint8_t uart_buf[1024] = {};
-HAL_StatusTypeDef UART_status;
-HAL_StatusTypeDef CAN_status;
-
+state_data_t 	state_data;
+state_t 		state 		= IDLE;
+uint32_t timeout_start 		= 0;
+_Bool 			new_frame 	= 0;
 RangingStatus 	ranging_status;
 dwt_rxdiag_t 	rx_diagnostics;
 double 			rx_power;
 double 			fp_power;
 double 			snr;
-_Bool 			CAN_Rx_OK 					= 0; //
 _Bool 			do_ranging 					= 0;
 _Bool 			dwm1000_setup_success 		= 0;
-AnchorTimeStamps anchor_stamps;
 BeaconTimeStamps beacon_stamps;
 uint8 			sequence_num 				= 0;
-unsigned long long t_sp, t_rr, t_sf, t_rp, t_sr, t_rf;
-///* Buffer to store received frame. See NOTE 1 below. */
-static uint8 tx_buffer[FRAME_LEN_MAX];
-static uint8 rx_buffer[FRAME_LEN_MAX];
-static uint8 uCurrentTrim_val;
+uint32_t 		operating_mode 				= DEVICE_MODE_TAG;
 
-#ifdef ANCHOR
+unsigned long long t_sp, t_rr, t_sf, t_rp, t_sr, t_rf;
+
+int size = 0; 						// used for sprintf and debugging
+uint8_t uart_buf[1024] = {}; 		// store data received over UART2
+HAL_StatusTypeDef 	UART_status;
+HAL_StatusTypeDef 	uart2_status; 	// status of uart2
+int8_t 				usb_status;
+uint32_t 			bytes_read; 	//
+extern AnchorData* anchor_data; 	// place to store data for anchors (defined in comm.h)
+CONFIG_FIELD_TYPE self_config[FIELD_SIZE*NUM_FIELDS]; 	// configuration for ourselves
+uint8_t packet[INPUT_BUFFER_SIZE]; 	// will hold received packet from host
+uint8_t packet_type = 0; 			// type of received packet
+uint8_t packet_len 	= 0; 			// length of received packet
+int packet_rcvd 	= 0; 			// indicate if packet has been received and how to process it
+uint8_t send_buf[SEND_BUF_SIZE]; 	// lorge buffer for response packet
+int usb_ind = 0;
 uint16 src_address;
 uint16 src_panid;
-#endif
-
 
 /* USER CODE END PV */
 
@@ -141,7 +131,24 @@ static void MX_SPI1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 /* USER CODE BEGIN PFP */
-
+void init_from_fields(void* fields, dwt_config_t* dw_config);
+void init_from_config(CONFIG_FIELD_TYPE* config, dwt_config_t* dw_config);
+void init_from_state(state_data_t* state, dwt_config_t* dw_config);
+void set_state_idle(state_data_t* state);
+void set_state_tag_idle(state_data_t* sd);
+void set_state_anchor_idle(state_data_t* state);
+void set_wait_for_poll(state_data_t* sd);
+void set_wait_for_final(state_data_t* sd);
+void set_wait_for_repsonse(state_data_t* sd);
+void set_wait_for_data(state_data_t* sd);
+void tag_wait_timeout(state_data_t* state);
+void anchor_wait_timeout(state_data_t* state);
+void next_anchor(state_data_t* state);
+void disable_ranging(state_data_t* state);
+void enable_ranging(state_data_t* state);
+void dw_it_disable(void);
+void dw_it_enable(void);
+uint8_t CDC_Transmit_FS(uint8_t* Buf, uint16_t Len);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -183,203 +190,337 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USB_DEVICE_Init();
   /* USER CODE BEGIN 2 */
-#ifdef BEACON
-    /* Setup anchor ID's, our system has 3 */
-    anchors[0].anchor_id = 0x11;
-    anchors[1].anchor_id = 0x22;
-    anchors[2].anchor_id = 0x33;
 
-#endif
+	anchor_data = (AnchorData*)malloc((MAX_NUMBER_OF_ANCHORS + 1)*sizeof(AnchorData));
+	init_anchor_array(anchor_data, MAX_NUMBER_OF_ANCHORS + 1);
 
-	/* Reset and initialise DW1000. See NOTE 2 below.
-  	 * For initialisation, DW1000 clocks must be temporarily set to crystal speed. After initialisation SPI rate can be increased for optimum
-  	 * performance. */
-  	reset_DW1000(); /* Target specific drive of RSTn line into DW1000 low for a period. */
-  	port_set_dw1000_slowrate();
-  	if (dwt_initialise(DWT_LOADUCODE) == DWT_ERROR)
-  	{
+	state_data.anchors = anchor_data;
+	// pre-populate anchor_data
+//	anchor_data[0].id = 1;
+//	anchor_data[1].id = 2;
+//	anchor_data[2].id = 3;
+//	anchor_data[3].id = 4;
 
-  		debug(&huart1, "INIT FAILED :(\r");
-  		while (1)
-  		{ };
-  	}else{
-  		debug(&huart1, "INIT SUCCESS!!\r");
-  	}
-  	port_set_dw1000_fastrate();
+	uint32_t id, mode, channel;
+	char str[128];
 
-  	/* Configure DW1000. See NOTE 3 below. */
-  	dwt_configure(&config);
+	init_field_memory(self_config); // set everything to defaults
+	get_field(self_config, FIELD_SELF_ID, (void*)&id);
+	get_field(self_config, FIELD_MODE, (void*)&mode);
+	get_field(self_config, FIELD_CHANNEL, (void*)&channel);
+	sprintf(str, "ID: %d\r\nChannel: %d\r\nMode: %d\r\n", id, channel, mode);
+	HAL_UART_Transmit(&huart1, str, strlen(str), 500);
 
-    dwt_setrxantennadelay(RX_ANT_DLY);
-    dwt_settxantennadelay(TX_ANT_DLY);
+	read_config_from_eeprom(self_config); 	// pull any existing values from flash
+	get_field(self_config, FIELD_SELF_ID, (void*)&id);
+	get_field(self_config, FIELD_MODE, (void*)&mode);
+	get_field(self_config, FIELD_CHANNEL, (void*)&channel);
+	sprintf(str, "ID: %d\r\nChannel: %d\r\nMode: %d\r\n", id, channel, mode);
+	HAL_UART_Transmit(&huart1, str, strlen(str), 500);
 
-    /* EEPROM stuff */
-    HAL_FLASH_Unlock();
-    uint32_t eeprom_data;
-    EE_Read(0, &eeprom_data);
-    if (eeprom_data == EEPROM_FLAG){
-    	// read from "EEPROM"
-    	EE_Read(1, &eeprom_data);
-    	self_pan_id = eeprom_data;
-    	EE_Read(2, &eeprom_data);
-    	self_address = eeprom_data;
-    	debug(&huart1, "Read from emulated EEPROM\r");
-    }else{
-    	/* set parameters to the programmed value and write them to "EEPROM" */
-    	self_pan_id 	= SELF_ID;
-    	self_address 	= SELF_ID;
-        EE_Format();
-        EE_Write(0, EEPROM_FLAG);
-        EE_Write(1, (uint32_t) self_pan_id);
-        EE_Write(2, (uint32_t) self_address);
-    	debug(&huart1, "Wrote to emulated EEPROM\r");
-    }
-    HAL_FLASH_Lock();
+	init_from_config(self_config, &config); // inititalize the DWM1000 from our fields
+	get_field(self_config, FIELD_SELF_ID, (void*)&id);
+	get_field(self_config, FIELD_MODE, (void*)&mode);
+	get_field(self_config, FIELD_CHANNEL, (void*)&channel);
+	sprintf(str, "ID: %d\r\nChannel: %d\r\nMode: %d\r\n", id, channel, mode);
+	HAL_UART_Transmit(&huart1, str, strlen(str), 500);
 
-    uCurrentTrim_val= dwt_getxtaltrim();
-
-    size = sprintf((char*)uart_buf, "XTAL trim:\t%d\r\nPAN ID:\t%d\r\nADDR:\t%d\r\n", uCurrentTrim_val, self_pan_id, self_address);
-  	UART_status = HAL_UART_Transmit(&huart1, uart_buf, size, 500);
-
-    /* Frame Filtering stuff */
-    dwt_setpanid(self_pan_id);
-    dwt_setaddress16(self_address);	// why not just have ADDRESS == PAN_ID ?
-
-    dwt_enableframefilter(DWT_FF_DATA_EN); // permit DATA frame types
+	HAL_Delay(state_data.self_id * 10); // delay to hopefully stagger broadcast messages
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
+	while (1)
+	{
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-#ifdef BEACON
+		// ---- check UART for data ----
+		uart2_status = HAL_UART_Receive(&huart2, uart_buf, HDDR_LEN, 5); //INPUT_TIMEOUT);
+		if((packet_type = uart_buf[0]) != 0 && uart2_status == HAL_OK){
+			//debug(&huart1, "Reading packet from UART\r");
+			HAL_GPIO_WritePin(GPIOB, USB_RX_LED_Pin, GPIO_PIN_SET);
+			// read the packet
+			uart2_status = HAL_UART_Receive(&huart2, uart_buf + HDDR_LEN, uart_buf[1] + 1, INPUT_TIMEOUT);
 
-//  		do_ranging = 1;
+			packet_len = HDDR_LEN + uart_buf[1] + 1;
+			memcpy(packet, uart_buf, packet_len);
 
-  		if(do_ranging){
-  			HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin, GPIO_PIN_SET);
+			if(uart2_status == HAL_OK && packet[packet_len -1] == STOP_BYTE){
+				packet_rcvd = IF_TYPE_UART;
+			}
+			memset(uart_buf, 0, packet_len); // clear the packet buffer
+			HAL_GPIO_WritePin(GPIOB, USB_RX_LED_Pin, GPIO_PIN_RESET);
+		}else if((packet_type = usb_rx_buffer[0]) != 0){
+			HAL_GPIO_WritePin(GPIOB, USB_RX_LED_Pin, GPIO_PIN_SET);
+			packet_len 	= usb_rx_buffer[1] + HDDR_LEN + 1;
+			memcpy(packet, usb_rx_buffer, packet_len);
+			memset(usb_rx_buffer, 0, packet_len);
+			packet_rcvd = IF_TYPE_USB;
+			HAL_GPIO_WritePin(GPIOB, USB_RX_LED_Pin, GPIO_PIN_RESET);
+		}
 
-  			for (int i = 0; i < NUMBER_OF_ANCHORS; i++){
-  				DistanceFrame* anchor = &(anchors[i]);
-  				int64_t tofs[SAMPLES_PER_POINT];
-  				_Bool ranging_ok = 1;
+		// ---- Process received packet ----
+		if(packet_rcvd > 0){
+			debug(&huart1, "Processing packet\r");
+			int packet_status;
+			if((packet_status = process_packet(packet, send_buf, self_config)) == PACKET_OK){
+				if(packet[0] == CMD_SET_CONFIG){
+					init_from_config(self_config, &config); // re-initialize with the new parameters
+					save_fields_to_eeprom(self_config);
+				}
+				int send_size = HDDR_LEN + send_buf[1] + 1;
+				switch(packet_rcvd){
+				case IF_TYPE_UART:
+					HAL_GPIO_WritePin(GPIOB, USB_TX_LED_Pin, GPIO_PIN_SET);
+					uart2_status = HAL_UART_Transmit(&huart2, send_buf, send_size, INPUT_TIMEOUT);
+					HAL_GPIO_WritePin(GPIOB, USB_TX_LED_Pin, GPIO_PIN_RESET);
+					break;
+				case IF_TYPE_USB:
+					HAL_GPIO_WritePin(GPIOB, USB_TX_LED_Pin, GPIO_PIN_SET);
+					//memcpy(UserTxBufferFS, send_buf, send_size);
+					CDC_Transmit_FS(send_buf, send_size);
+					HAL_GPIO_WritePin(GPIOB, USB_TX_LED_Pin, GPIO_PIN_RESET);
+					break;
+				default:
+					break;
+				}
+				packet_rcvd = 0;
+			}else{
+				debug(&huart1, "Packet read error");
+			}
+		}
 
-  				// attempt to gather SAMPLES_PER_POINT many samples
-  				int samples;
-  				for(samples = 0; samples < SAMPLES_PER_POINT; samples++){
-  					ranging_status = range_with_anchor(anchor->anchor_id, &anchor_stamps, &beacon_stamps, &sequence_num);
-  					if(ranging_status != RANGING_SUCCESS){
-  						ranging_ok = 0;
-  						break;
-  					}
-  					tofs[samples] = get_tof(&anchor_stamps, &beacon_stamps);
-  					HAL_Delay(10);
-  				}
-  				// as long as we have at least 1 sample, transmit this point
-  				if(ranging_ok){
-  	  				dwt_readdiagnostics(&rx_diagnostics); 	// read diagnostics of the last frame
-  	  				rx_power = get_rx_power(&rx_diagnostics);
-  	  				fp_power = get_fp_power(&rx_diagnostics);
-  	  				snr 	 = get_fp_snr(&rx_diagnostics);
-  	  				anchor->confidence = get_confidence(rx_power, fp_power, snr);
+		uint32 status_reg = dwt_read32bitreg(SYS_STATUS_ID);
 
-  					int64_t sum = 0;
-  					for(int i = 0; i < samples; i++){
-  						sum += tofs[i];
-  					}
-  					int tof 	= (int)(sum / samples);
+		if(status_reg & SYS_STATUS_ALL_RX_ERR){
+			//debug(&huart1, "RX error\r");
+			//(SYS_STATUS_RXPHE | SYS_STATUS_RXFCE | SYS_STATUS_RXRFSL | SYS_STATUS_RXSFDTO \
+            | SYS_STATUS_AFFREJ | SYS_STATUS_LDEERR)
+			if(status_reg & SYS_STATUS_RXPHE)
+				debug(&huart1, "PHY error\r");
+			else if(status_reg & SYS_STATUS_RXFCE)
+				debug(&huart1, "Receiver FCS Error\r");
+			else if(status_reg & SYS_STATUS_RXRFSL)
+				debug(&huart1, "Receiver Reed Solomon Frame Sync Loss\r");
+			else if(status_reg & SYS_STATUS_RXSFDTO)
+				debug(&huart1, "Receive SFD timeout\r");
+			else if(status_reg & SYS_STATUS_AFFREJ)
+				debug(&huart1, "Automatic Frame Filtering rejection\r");
+			else if(status_reg & SYS_STATUS_LDEERR)
+				debug(&huart1, "Leading edge detection processing error\r");
 
-  					float dist 	= 299792458.0 * (1.0*tof / (128.0*499200000.0));
+			/* Clear RX error events in the DW1000 status register. */
+			dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_ERR);
 
-  					size = sprintf((char*)uart_buf, "Anchor %x,\t", anchor->anchor_id);
-  					UART_status = HAL_UART_Transmit(&huart1, uart_buf, size, 500);
+			/* Reset RX to properly reinitialise LDE operation. */
+			dwt_rxreset();
 
-  					size = sprintf((char*)uart_buf, "ToF Counts: %d\t", tof);
-  					UART_status = HAL_UART_Transmit(&huart1, uart_buf, size, 500);
+			HAL_Delay(10);
 
-  					int dist_mm = (int)1000.0*dist;
-  					size = sprintf((char*)uart_buf, "DISTANCE (mm): %d\t", dist_mm);
-  					UART_status = HAL_UART_Transmit(&huart1, uart_buf, size, 500);
+			set_state_idle(&state_data);
+		}
 
-  					size = sprintf((char*)uart_buf, "Confidence: %d\r\n", anchor->confidence);
-  					UART_status = HAL_UART_Transmit(&huart1, uart_buf, size, 500);
+		// ==== STATE MACHINE ====
+		if(state_data.mode == DEVICE_MODE_TAG){
+			switch(state_data.state){
+			case IDLE:
+				//debug(&huart1, "idle...\r");
+				// check for the trigger signal
+				if(state_data.ranging){
+					// select whichever anchor we're ranging with
+					state_data.transact_id = state_data.anchors[state_data.anchor_ind].id;
+					size = sprintf(debug_buf, "(Anchor index: %d) Sending POLL to anchor %d\r\n", state_data.anchor_ind, state_data.transact_id);
+					HAL_UART_Transmit(&huart1, debug_buf, size, 100);
 
-  					anchor->type = DISTANCE_FRAME_TYPE;
-  					anchor->distance = dist;
+					// LED on
+					HAL_GPIO_WritePin(RANGING_LED_GPIO_Port, RANGING_LED_Pin, GPIO_PIN_SET);
+					int data_len = rtls_make_mac_header(&state_data, FRAME_TYPE_DATA); //make_mac_header(state_data.tx_buffer, state_data.transact_id, state_data.transact_id, state_data.seq_num);
+					state_data.tx_buffer[data_len++] = POLL; // right after the MAC header
 
+					dwt_forcetrxoff(); // in case we were in RX mode looking for a beacon frame
 
-  				}else{
-  					debug(&huart1, "RANGING FAILED :(\r");
-  					anchor->type = DISTANCE_FRAME_TYPE;
-  					anchor->distance = -1.0;
-  		  			HAL_Delay(250);
-  				}
-  			}
-  			do_ranging = 0;
-  			HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin, GPIO_PIN_RESET);
-  		}
+					if(transmit_frame(state_data.tx_buffer, data_len + 2, 1) != TX_SUCCESS)
+						break;
 
-  		/* Execute a delay between transmissions. */
-//  		HAL_Delay(TX_DELAY_MS);
+					state_data.t_sp = get_tx_timestamp();
+					set_wait_for_repsonse(&state_data);
+				}else if(state_data.new_frame && state_data.rx_buffer[MAC_SIZE_EXPECTED] == ANCHOR_BROADCAST){// get_mac_frame_type(state_data.rx_buffer) == FRAME_TYPE_BEACON){
+					// an anchor is identifying themselves
+					debug(&huart1, "Got a beacon frame\r");
 
-#endif // BEACON
+					// add the new anchor and sort the array
+					add_new_anchor(&state_data, get_anchor_from_frame(state_data.rx_buffer));
 
-#ifdef ANCHOR
+					debug(&huart1, "Enabling ranging\r");
+					state_data.ranging = 1; // enable ranging
 
-  		 int rcv_len = receive_frame(rx_buffer, FRAME_LEN_MAX, 500);
-  		 if(rcv_len > 0){
-  			 HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin, GPIO_PIN_SET);
-  			 switch(rx_buffer[MAC_SIZE_EXPECTED]){
-  			 case POLL:{
-  				 anchor_stamps.t_rp = get_rx_timestamp();
+					state_data.new_frame = 0; // reset this flag
+					HAL_Delay(state_data.self_id * 10);
+					set_state_tag_idle(&state_data);
+				}
+				HAL_Delay(10);
+				break;
+			case WAIT_FOR_RESPONSE:
+				if(state_data.new_frame){
+					// check the frame type and source address
+					if(state_data.rx_buffer[MAC_SIZE_EXPECTED] == RESPONSE_INIT &&
+							get_src_addr(state_data.rx_buffer) == state_data.transact_id){
 
-  				 src_address 	= get_src_addr(rx_buffer);
-  				 src_panid 		= get_src_panid(rx_buffer);
-  				 sequence_num 	= get_seq_number(rx_buffer);
-  				 uint8 data_len = make_mac_header(tx_buffer, src_address, src_panid, ++sequence_num);
-  				 tx_buffer[data_len++] = RESPONSE_INIT;
-  				 HAL_Delay(DELAY_BEFORE_TX);
-  				 transmit_frame(tx_buffer, data_len + 2, 1); // +2 to account for checksum
+						size = sprintf(debug_buf, "RESPONSE_INIT from %d\r\n", state_data.transact_id);
+						HAL_UART_Transmit(&huart1, debug_buf, size, 100);
 
-  				 anchor_stamps.t_sr = get_tx_timestamp();
-  				 //  					 dwt_rxreset();
-  				 break;}
-  			 case SEND_FINAL:{
-  				 anchor_stamps.t_rf = get_rx_timestamp();
+						state_data.t_rr = get_rx_timestamp();
 
-  				 uint16 new_src_addr 	= get_src_addr(rx_buffer);
-  				 uint16 new_src_panid 	= get_src_panid(rx_buffer);
-  				 uint8 new_seq_num 		= get_seq_number(rx_buffer);
-  				 if(new_src_addr == src_address && new_src_panid == src_panid){
-  					 sequence_num = new_seq_num;
-  					 uint8 data_len = make_mac_header(tx_buffer, src_address, src_panid, ++sequence_num);
-  					 tx_buffer[data_len++] = RESPONSE_DATA;
-  					 memcpy(tx_buffer+data_len, &anchor_stamps, sizeof(anchor_stamps));
+						send_response_final(&state_data);
 
-  	  				 HAL_Delay(DELAY_BEFORE_TX);
-  	  				 transmit_frame(tx_buffer, data_len + sizeof(anchor_stamps) + 2, 1);
-  	  				 anchor_stamps.t_rp = 0;
-  	  				 anchor_stamps.t_sr = 0;
-  	  				 anchor_stamps.t_rf = 0;
-  				 }else{
-  					 debug(&huart1, "Received from unexpected source\r");
-  				 }
+						state_data.t_sf = get_tx_timestamp();
 
-  				 break;}
-  			 default:{
-  				 debug(&huart1, "Unrecognized type received\r");
-  			 	 break;}
-  			 }
-  			 HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin, GPIO_PIN_RESET);
-  		 }else{
-  			 debug(&huart1, "Timed out\r");
-  		 }
+						set_wait_for_data(&state_data);
 
-#endif // ANCHOR
-  }
+						state_data.timer_start = HAL_GetTick();
+					}else{
+						dwt_rxenable(DWT_START_RX_IMMEDIATE); // re-enable receiver and keep listening
+					}
+					state_data.new_frame = 0;
+				}else if(HAL_GetTick() - state_data.timer_start >= RX_TIMEOUT){
+					tag_wait_timeout(&state_data);
+				}
+				break;
+			case WAIT_FOR_DATA:
+				if(state_data.new_frame){
+					// check the frame type and source address
+					if(state_data.rx_buffer[MAC_SIZE_EXPECTED] == RESPONSE_DATA &&
+							get_src_addr(state_data.rx_buffer) == state_data.transact_id){
+
+						size = sprintf(debug_buf, "RESPONSE_DATA from %d\r\n", state_data.transact_id);
+						HAL_UART_Transmit(&huart1, debug_buf, size, 100);
+
+						AnchorData* anchor = &(state_data.anchors[state_data.anchor_ind]);
+
+						// COPY ALL THE DATA OVER
+						int ind = MAC_SIZE_EXPECTED + 1; // index for start of timestamps
+						memcpy(&state_data.t_rp, state_data.rx_buffer + ind, sizeof(state_data.t_rp));
+						ind += sizeof(state_data.t_rp);
+						memcpy(&state_data.t_sr, state_data.rx_buffer + ind, sizeof(state_data.t_sr));
+						ind += sizeof(state_data.t_sr);
+						memcpy(&state_data.t_rf, state_data.rx_buffer + ind, sizeof(state_data.t_rf));
+						ind += sizeof(state_data.t_rf);
+						memcpy(&anchor->x, state_data.rx_buffer + ind, sizeof(anchor->x));
+						ind += sizeof(anchor->x);
+						memcpy(&anchor->y, state_data.rx_buffer + ind, sizeof(anchor->y));
+						ind += sizeof(anchor->y);
+						memcpy(&anchor->z, state_data.rx_buffer + ind, sizeof(anchor->z));
+						ind += sizeof(anchor->z);
+						anchor->timestamp = HAL_GetTick();
+
+						get_tof(&state_data);
+
+						state_data.distance = DISTANCE_FROM_TOF(state_data.tof);
+						//state_data.ranging = 0; // done ranging
+
+						anchor->timeout_count = 0;
+						anchor->distance = state_data.distance;
+
+						HAL_GPIO_WritePin(RANGING_LED_GPIO_Port, RANGING_LED_Pin, GPIO_PIN_RESET);
+
+						next_anchor(&state_data); 				// increment anchor index
+
+						HAL_Delay(state_data.ranging_period); 	// take a break
+
+						set_state_tag_idle(&state_data); 		// back to idle state
+					}else{
+						dwt_rxenable(DWT_START_RX_IMMEDIATE); 	// re-enable receiver and keep listening
+					}
+					state_data.new_frame = 0;
+				}else if(HAL_GetTick() - state_data.timer_start >= RX_TIMEOUT){
+					tag_wait_timeout(&state_data);
+				}
+				break;
+			default:
+				set_state_tag_idle(&state_data);
+				break;
+			}
+		}else if(state_data.mode == DEVICE_MODE_ANCHOR){
+			switch(state_data.state){
+			case IDLE:
+				set_wait_for_poll(&state_data);
+				break;
+			case WAIT_FOR_POLL:
+				if(state_data.new_frame){
+					debug(&huart1, "new frame\r");
+					// if we're NOT ranging already, and this is a POLL frame
+					if(!state_data.ranging && state_data.rx_buffer[MAC_SIZE_EXPECTED] == POLL){
+
+						enable_ranging(&state_data); // indicate ranging in progress
+
+						state_data.t_rp = get_rx_timestamp(); 		// stash rx timestamp
+						//state_data.transact_id = get_src_addr(state_data.rx_buffer); // indicate who we're talking with
+
+						size = sprintf(debug_buf, "Got POLL from %d\r\n", state_data.transact_id);
+						HAL_UART_Transmit(&huart1, debug_buf, size, 100);
+
+						send_response_init(&state_data); 	// send a RESPONSE_INIT frame & stash timestamp
+						if(state_data.tx_status != TX_SUCCESS){
+							init_from_config(self_config, &config); // just reinitialize
+							set_state_idle(&state_data);
+						}else{
+							set_wait_for_final(&state_data); 	// transition to state WAIT_FOR_FINAL
+						}
+					}else{
+						dwt_rxenable(DWT_START_RX_IMMEDIATE); // re-enable receiver and keep listening
+					}
+					state_data.new_frame = 0; // deassert new_frame
+				}
+				else if(HAL_GetTick() - state_data.broadcast_timer >= ANCHOR_BROADCAST_PERIOD){
+					// BROADCAST
+					disable_ranging(&state_data);
+					debug(&huart1, "Broadcasting our info...\r");
+					dwt_forcetrxoff();
+
+					send_anchor_broadcast(&state_data);
+					state_data.broadcast_timer = HAL_GetTick();
+					set_wait_for_poll(&state_data); // enables receiver and resets timer_start
+				}
+				else if(state_data.rx_buffer[MAC_SIZE_EXPECTED] == ANCHOR_BROADCAST){
+					// we've received an anchor broadcast signal
+					HAL_Delay(state_data.self_id * 10); // delay to stagger broadcast transmission;
+					dwt_rxenable(DWT_START_RX_IMMEDIATE);
+				}
+				break;
+			case WAIT_FOR_FINAL:
+				if(state_data.new_frame){
+					// if it's a SEND_FINAL frame and the SRC ADDR matches the current transact_id
+					if(state_data.rx_buffer[MAC_SIZE_EXPECTED] == SEND_FINAL &&
+							state_data.transact_id == get_src_addr(state_data.rx_buffer)){
+
+						size = sprintf(debug_buf, "Got SEND_FINAL from %d\r\n", state_data.transact_id);
+						HAL_UART_Transmit(&huart1, debug_buf, size, 100);
+
+						state_data.t_rf = get_rx_timestamp(); 	// stash the timestamp
+
+						send_response_data(&state_data); 		// send a RESPONSE_DATA frame
+
+						disable_ranging(&state_data);
+
+						set_wait_for_poll(&state_data); // return to WAIT_FOR_POLL
+					}else{
+						dwt_rxenable(DWT_START_RX_IMMEDIATE);
+					}
+					state_data.new_frame = 0;
+				}else if(HAL_GetTick() - state_data.timer_start >= RX_TIMEOUT){
+					anchor_wait_timeout(&state_data);
+				}
+				break;
+			default:
+				set_wait_for_poll(&state_data);
+				break;
+			}
+		}else{
+			// unrecognized operating mode
+		}
+
+	}
   /* USER CODE END 3 */
 }
 
@@ -550,7 +691,7 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOB, DW_NSS_Pin|DW_RESET_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, RANGING_LED_Pin|USB_LED_Pin|USB_PULLUP_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, USB_RX_LED_Pin|RANGING_LED_Pin|USB_TX_LED_Pin|USB_PULLUP_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : TXLED_Pin RXOKLED_Pin */
   GPIO_InitStruct.Pin = TXLED_Pin|RXOKLED_Pin;
@@ -558,8 +699,10 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DW_NSS_Pin RANGING_LED_Pin USB_LED_Pin USB_PULLUP_Pin */
-  GPIO_InitStruct.Pin = DW_NSS_Pin|RANGING_LED_Pin|USB_LED_Pin|USB_PULLUP_Pin;
+  /*Configure GPIO pins : DW_NSS_Pin USB_RX_LED_Pin RANGING_LED_Pin USB_TX_LED_Pin 
+                           USB_PULLUP_Pin */
+  GPIO_InitStruct.Pin = DW_NSS_Pin|USB_RX_LED_Pin|RANGING_LED_Pin|USB_TX_LED_Pin 
+                          |USB_PULLUP_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -572,314 +715,337 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(DW_RESET_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : BOOT1_Pin DW_IRQn_Pin */
-  GPIO_InitStruct.Pin = BOOT1_Pin|DW_IRQn_Pin;
+  /*Configure GPIO pin : BOOT1_Pin */
+  GPIO_InitStruct.Pin = BOOT1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(BOOT1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : DW_IRQn_Pin */
+  GPIO_InitStruct.Pin = DW_IRQn_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(DW_IRQn_GPIO_Port, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(DW_IRQn_Type, 0, 0);
+  HAL_NVIC_EnableIRQ(DW_IRQn_Type);
 
 }
 
 /* USER CODE BEGIN 4 */
+void set_state_idle(state_data_t* state){
+	if(state->mode == DEVICE_MODE_TAG){
+		set_state_tag_idle(state);
+	}else{
+		set_state_anchor_idle(state);
+	}
+}
+void set_state_tag_idle(state_data_t* sd){
+	sd->state = IDLE;
+	sd->timer_start = HAL_GetTick(); 	// reset the timer
+	dwt_rxenable(DWT_START_RX_IMMEDIATE); 	// in case there are any anchor beacon frames
+}
+
+void set_state_anchor_idle(state_data_t* state){
+	disable_ranging(state);
+	state->state = IDLE;
+}
+
+void set_wait_for_poll(state_data_t* sd){
+	sd->state = WAIT_FOR_POLL;
+	sd->timer_start = HAL_GetTick(); 	// reset the timer
+	dwt_rxenable(DWT_START_RX_IMMEDIATE); /* Activate reception immediately. */
+}
+
+void set_wait_for_final(state_data_t* sd){
+	sd->state = WAIT_FOR_FINAL;
+	sd->timer_start = HAL_GetTick(); 	// reset the timer
+	dwt_rxenable(DWT_START_RX_IMMEDIATE); /* Activate reception immediately. */
+}
+
+void set_wait_for_repsonse(state_data_t* sd){
+	sd->state = WAIT_FOR_RESPONSE;
+	sd->timer_start = HAL_GetTick(); 	// reset the timer
+	dwt_rxenable(DWT_START_RX_IMMEDIATE);
+}
+
+void disable_ranging(state_data_t* state){
+	debug(&huart1, "Disabling ranging\r");
+	state->ranging = 0;
+	HAL_GPIO_WritePin(RANGING_LED_GPIO_Port, RANGING_LED_Pin, GPIO_PIN_RESET);
+}
+void enable_ranging(state_data_t* state){
+	debug(&huart1, "Enabling ranging\r");
+	state->ranging = 1;
+	HAL_GPIO_WritePin(RANGING_LED_GPIO_Port, RANGING_LED_Pin, GPIO_PIN_SET);
+}
+
+void set_wait_for_data(state_data_t* sd){
+	sd->state = WAIT_FOR_DATA;
+	sd->timer_start = HAL_GetTick(); 	// reset the timer
+	dwt_rxenable(DWT_START_RX_IMMEDIATE);
+}
+
+void tag_wait_timeout(state_data_t* state){
+	state->anchors[state->anchor_ind].timeout_count++;
+	size = sprintf(debug_buf, "(Anchor ind: %d) timed out waiting for %d\r\n", state->anchor_ind, state->anchors[state->anchor_ind].id);
+	HAL_UART_Transmit(&huart1, debug_buf, size, 100);
+
+	// have we timed out 3 times in a row
+	if(state->anchors[state->anchor_ind].timeout_count > 3){
+		// if so, mark this anchor as dead
+		state->anchors[state->anchor_ind].is_alive = false;
+		// clean up dead anchors
+		// decrement num_anchors by the number removed
+		int dead_anchors = remove_dead_anchors(state->anchors, state->num_anchors);
+		sort_anchors_by_rx_power(state->anchors, state->num_anchors);
+		state->num_anchors -= dead_anchors;
+		size = sprintf(debug_buf, "Removed %d dead anchors (%d anchors alive)\r\n", dead_anchors, state->num_anchors);
+		HAL_UART_Transmit(&huart1, debug_buf, size, 100);
+
+	}
+	if(state->num_anchors > 0){
+		enable_ranging(state); // enable ranging
+	}else{
+		disable_ranging(state); // no anchors, disable ranging
+	}
+	next_anchor(state); // increment anchor_ind, or loop back to 0
+	set_state_tag_idle(state); // move to idle state
+}
+
+void anchor_wait_timeout(state_data_t* state){
+	size = sprintf(debug_buf, "Timed out waiting for %d\r\n", state->transact_id);
+	HAL_UART_Transmit(&huart1, debug_buf, size, 100);
+	disable_ranging(state);
+	set_wait_for_poll(state);
+}
+
+void next_anchor(state_data_t* state){
+	// advance the anchor index
+	state->anchor_ind++;
+
+	if(state->anchor_ind >= state->n_range_with || state->anchor_ind >= state->num_anchors)
+		state->anchor_ind = 0;
+}
+
+/**
+ * callback to run when the DWM_IRQn pin goes HIGH, indicating frame reception
+ */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin){
+
+	//debug(&huart1, "Interrupt\r");
+	if(GPIO_Pin == DW_IRQn_Pin){
+
+		uint32_t status_reg = dwt_read32bitreg(SYS_STATUS_ID);
+
+		if (status_reg & SYS_STATUS_RXFCG){
+			state_data.new_frame = 1; // signal to the state machine that we have a new frame
+			read_rx_frame(state_data.rx_buffer);
+//			if((f_len)){
+//				state_data.new_frame = 1; // signal to the state machine that we have a new frame
+//
+//				int print_len = 0, i;
+//				for(i = 0; i < f_len; i++){
+//					print_len += sprintf(debug_buf + print_len, "%x ", state_data.rx_buffer[i]);
+//				}
+//				print_len += sprintf(debug_buf + print_len, "%x \r\n", state_data.rx_buffer[11]);
+//				HAL_UART_Transmit(&huart1, debug_buf, print_len, 500);
+//			}
+		}
+	}
+
+}
+
+void dw_it_disable(void){
+	HAL_NVIC_DisableIRQ(DW_IRQn_Type);
+}
+void dw_it_enable(void){
+	HAL_NVIC_EnableIRQ(DW_IRQn_Type);
+}
+
+
+//static dwt_config_t config = {
+//    2,               /* Channel number. */
+//    DWT_PRF_64M,     /* Pulse repetition frequency. */
+//    DWT_PLEN_128,   /* Preamble length. Used in TX only. */
+//    DWT_PAC8,       /* Preamble acquisition chunk size. Used in RX only. */
+//    9,               /* TX preamble code. Used in TX only. */
+//    9,               /* RX preamble code. Used in RX only. */
+//    0,               /* 0 to use standard SFD, 1 to use non-standard SFD. */
+//    DWT_BR_6M8,      /* Data rate. */
+//    DWT_PHRMODE_STD, /* PHY header mode. */
+//    (1025 + 64)    	 /* SFD timeout (preamble length + 1 + SFD length - PAC size). Used in RX only. */
+//};
+void init_from_config(CONFIG_FIELD_TYPE* config, dwt_config_t* dw_config){
+
+	uint32_t id = 0;
+	uint32_t channel = 2;
+	uint32_t mode = 0;
+	uint32_t n_anchors = 0;
+	uint32_t samples_per_range = 0;
+	get_field(config, FIELD_SELF_ID, (void*)&id);
+	get_field(config, FIELD_MODE, (void*)&mode);
+	get_field(config, FIELD_CHANNEL, (void*)&channel);
+	get_field(config, FIELD_NUMBER_OF_ANCHORS, (void*)&n_anchors);
+	get_field(config, FIELD_SAMPLES_PER_RANGE, (void*)&samples_per_range);
+	get_field(config, FIELD_X, (void*)&state_data.x);
+	get_field(config, FIELD_Y, (void*)&state_data.y);
+	get_field(config, FIELD_Z, (void*)&state_data.z);
+
+	state_data.state 	= IDLE;
+	state_data.self_id 	= (uint16_t)(id & 0xFFFF);
+	state_data.channel  = (uint8_t) (channel & 0xFF);
+	state_data.mode = (uint8_t) (mode & 0xFF);
+	state_data.ranging_period = 100;
+
+	if(n_anchors > MAX_NUMBER_OF_ANCHORS)
+		n_anchors = MAX_NUMBER_OF_ANCHORS;
+
+	state_data.num_anchors = 0;
+	state_data.n_range_with = (int)(n_anchors & 0xFF);
+
+	dw_config->chan = (uint8) (channel & 0xFF);
+
+	switch(dw_config->chan){
+	case 1:
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	case 2:
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	case 3:
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	case 5:
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	case 4:
+		dw_config->rxCode = 17;
+		dw_config->txCode = 17;
+		break;
+	case 7:
+		dw_config->rxCode = 17;
+		dw_config->txCode = 17;
+		break;
+	default:
+		dw_config->chan = 2;
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	}
+
+
+	reset_DW1000(); /* Target specific drive of RSTn line into DW1000 low for a period. */
+	port_set_dw1000_slowrate();
+	if (dwt_initialise(DWT_LOADUCODE) == DWT_ERROR){
+		debug(&huart1, "INIT FAILED :(\r");
+		return;
+	}else{
+		debug(&huart1, "INIT SUCCESS!!\r");
+	}
+	port_set_dw1000_fastrate();
+
+	/* Configure DW1000. See NOTE 3 below. */
+	dwt_configure(dw_config);
+
+	dwt_setrxantennadelay(RX_ANT_DLY);
+	dwt_settxantennadelay(TX_ANT_DLY);
+
+	dwt_setpanid((uint16) state_data.self_id);
+	dwt_setaddress16((uint16)state_data.self_id);	// why not just have ADDRESS == PAN_ID ?
+
+	uint16_t enable = DWT_FF_DATA_EN; //enable data frames
+	if(state_data.mode == DEVICE_MODE_TAG)
+		enable |= DWT_FF_BEACON_EN; // listen for these only if we're a tag
+
+	dwt_enableframefilter(enable);
+
+	dwt_setinterrupt(DWT_INT_RFCG, 1);
+
+	char str[128];
+	sprintf(str, "ID: %d\r\nChannel: %d\r\nMode: %d\r\n", state_data.self_id, state_data.channel, state_data.mode);
+	HAL_UART_Transmit(&huart1, str, strlen(str), 500);
+
+	if(state_data.mode == DEVICE_MODE_TAG)
+		set_state_tag_idle(&state_data); // get the ball rolling
+}
+
+void init_from_state(state_data_t* state, dwt_config_t* dw_config){
+
+	self_pan_id = state->self_id;
+	self_address = state->self_id;
+
+	dw_config->chan = state->channel;
+
+	switch(dw_config->chan){
+	case 1:
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	case 2:
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	case 3:
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	case 5:
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	case 4:
+		dw_config->rxCode = 17;
+		dw_config->txCode = 17;
+		break;
+	case 7:
+		dw_config->rxCode = 17;
+		dw_config->txCode = 17;
+		break;
+	default:
+		dw_config->chan = 2;
+		dw_config->rxCode = 9;
+		dw_config->txCode = 9;
+		break;
+	}
+
+
+	reset_DW1000(); /* Target specific drive of RSTn line into DW1000 low for a period. */
+	port_set_dw1000_slowrate();
+	if (dwt_initialise(DWT_LOADUCODE) == DWT_ERROR){
+		debug(&huart1, "INIT FAILED :(\r");
+		return;
+	}else{
+		debug(&huart1, "INIT SUCCESS!!\r");
+	}
+	port_set_dw1000_fastrate();
+
+	/* Configure DW1000. See NOTE 3 below. */
+	dwt_configure(dw_config);
+
+	dwt_setrxantennadelay(RX_ANT_DLY);
+	dwt_settxantennadelay(TX_ANT_DLY);
+
+	dwt_setpanid((uint16) state->self_id);
+	dwt_setaddress16((uint16) state->self_id);	// why not just have ADDRESS == PAN_ID ?
+
+	dwt_enableframefilter(DWT_FF_DATA_EN | DWT_FF_BEACON_EN); // permit DATA frame types
+
+	state_data.state 	= IDLE;
+}
+
 
 void debug(UART_HandleTypeDef* huart, char* text){
-	char c;
 	int len = 0;
-	while(c != '\r'){
-		c = text[len++];
-	}
+	while( text[len++] != '\r' && len < 1024){ }
 	HAL_UART_Transmit(huart, (uint8_t*)text, len, 500);
 	char newline[] = {'\n'};
 	HAL_UART_Transmit(huart, newline, 1, 500);
-}
-
-RangingStatus range_with_anchor(uint8_t anchor_id, AnchorTimeStamps* a_stamps, BeaconTimeStamps* b_stamps, uint8* seq_num){
-	uint8 tx_buf[FRAME_LEN_MAX];
-	uint8 rx_buf[FRAME_LEN_MAX];
-	uint8 data_len;
-	uint16 new_src_addr;
-	uint16 new_src_panid;
-	uint16 new_seq_num;
-	TxStatus tx_status;
-	int rcv_len = -1;
-
-	// ----- SEND POLL -----
-	data_len = make_mac_header(tx_buf, anchor_id, anchor_id, *seq_num);
-	tx_buf[data_len++] = POLL;
-	HAL_Delay(DELAY_BEFORE_TX);
-
-	tx_status = transmit_frame(tx_buf, data_len + 2, 1); 	// data_len + 2 to account for checksum
-
-	if(!(tx_status == TX_SUCCESS)){
-		return SEND_POLL_FAILED;
-	}
-	b_stamps->t_sp = get_tx_timestamp();
-
-	// ----- RECEIVE RESPONSE -----
-	rcv_len = receive_frame(rx_buf, FRAME_LEN_MAX, 1000);
-	if(rcv_len <= 0){
-		debug(&huart1, "No frame received\r");
-		return RECEIVE_RESPONSE_FAILED;
-	}
-	new_src_addr 	= get_src_addr(rx_buf);
-	new_src_panid 	= get_src_panid(rx_buf);
-	new_seq_num 	= get_seq_number(rx_buf);
-	if(new_src_addr != anchor_id || new_src_panid != anchor_id){
-		debug(&huart1, "Received from unexpected source\r");
-		return RECEIVE_RESPONSE_FAILED;
-	}
-	if(rx_buf[MAC_SIZE_EXPECTED] != RESPONSE_INIT){
-		debug(&huart1, "Frame didn't contain the right numbers\r");
-		return RECEIVE_RESPONSE_FAILED;
-	}
-
-	*seq_num = get_seq_number(rx_buf);
-	b_stamps->t_rr = get_rx_timestamp();
-
-	// ----- SEND FINAL -----
-	data_len = make_mac_header(tx_buf, anchor_id, anchor_id, ++(*seq_num));
-	tx_buf[data_len++] = SEND_FINAL;
-	HAL_Delay(DELAY_BEFORE_TX);
-
-	tx_status = transmit_frame(tx_buf, data_len + 2, 1);
-
-	if(!(tx_status == TX_SUCCESS)){
-			return SEND_FINAL_FAILED;
-	}
-
-	b_stamps->t_sf = get_tx_timestamp();
-
-	// ----- RECEIVE TIMESTAMPS -----
-	rcv_len = receive_frame(rx_buf, FRAME_LEN_MAX, 1000);
-	if(rcv_len <= 0){
-		debug(&huart1, "No timestamps frame received\r");
-		return RECEIVE_TIMESTAMPS_FAILED;
-	}
-	new_src_addr 	= get_src_addr(rx_buf);
-	new_src_panid 	= get_src_panid(rx_buf);
-	new_seq_num 	= get_seq_number(rx_buf);
-	if(new_src_addr != anchor_id || new_src_panid != anchor_id){
-		debug(&huart1, "Received timestamps from unexpected source\r");
-		return RECEIVE_TIMESTAMPS_FAILED;
-	}
-	*seq_num = get_seq_number(rx_buf);
-	b_stamps->t_ff = get_rx_timestamp();
-	if(rx_buf[MAC_SIZE_EXPECTED] != RESPONSE_DATA){
-		debug(&huart1, "Timestamps frame didn't contain the right numbers\r");
-		return RECEIVE_TIMESTAMPS_FAILED;
-	}
-	memcpy(a_stamps, rx_buf+MAC_SIZE_EXPECTED+1, sizeof(*a_stamps));
-
-	return RANGING_SUCCESS;
-}
-
-int64_t get_tof(AnchorTimeStamps* a_stamps, BeaconTimeStamps* b_stamps){
-//	int round1 	= (b_stamps->t_rr - b_stamps->t_sp);
-//	int reply1 	= (a_stamps->t_sr - a_stamps->t_rp);
-//	int round2 	= (a_stamps->t_rf - a_stamps->t_sr);
-//	int reply2 	= (b_stamps->t_sf - b_stamps->t_rr);
-//
-//	int tof 	= ((round1 - reply1) + (round2 - reply2)) / 4;
-//	return tof;
-	double round1 	= (double)((uint32)b_stamps->t_rr - (uint32)b_stamps->t_sp);
-	double reply1 	= (double)((uint32)a_stamps->t_sr - (uint32)a_stamps->t_rp);
-	double round2 	= (double)((uint32)a_stamps->t_rf - (uint32)a_stamps->t_sr);
-	double reply2 	= (double)((uint32)b_stamps->t_sf - (uint32)b_stamps->t_rr);
-
-	int64_t tof 		= (int64_t)( round1*round2 - reply1*reply2 )/(round1+round2+reply1+reply2);
-	return tof;
-}
-
-int receive_frame(uint8* buffer, int max_len, int timeout){
-	/* Hold copy of status register state here for reference so that it can be examined at a debug breakpoint. */
-	uint32 status_reg = 0;
-
-	/* Hold copy of frame length of frame received (if good) so that it can be examined at a debug breakpoint. */
-	uint16 frame_len = 0;
-
-	int count = 0;
-	timeout = timeout * 20; // convert milliseconds to 50's of uSeconds
-
-	dwt_rxenable(DWT_START_RX_IMMEDIATE); /* Activate reception immediately. See NOTE 3 below. */
-
-	/* Poll until a frame is properly received or an error/timeout occurs. See NOTE 4 below.
-	 * STATUS register is 5 bytes long but, as the event we are looking at is in the first byte of the register, we can use this simplest API
-	 * function to access it. */
-	while (!((status_reg = dwt_read32bitreg(SYS_STATUS_ID)) & (SYS_STATUS_RXFCG | SYS_STATUS_ALL_RX_ERR)) && !(count >= timeout))
-	{
-//		HAL_Delay(1);
-		u_delay(50);
-		count++;
-	};
-
-	if (status_reg & SYS_STATUS_RXFCG)
-	{
-		/* A frame has been received, copy it to our local buffer. */
-		frame_len = dwt_read32bitreg(RX_FINFO_ID) & RX_FINFO_RXFL_MASK_1023;
-		if (frame_len <= max_len)
-		{
-			dwt_readrxdata(buffer, frame_len, 0);
-		}
-
-		/* Clear good RX frame event in the DW1000 status register. */
-		dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_RXFCG);
-
-		return frame_len;
-	}
-	else if(count >= timeout)
-	{
-		dwt_forcetrxoff(); // guarantee that the receiver is off
-		return -1;
-	}else{
-		/* Clear RX error events in the DW1000 status register. */
-		dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_ALL_RX_ERR);
-
-		/* Reset RX to properly reinitialise LDE operation. */
-		dwt_rxreset();
-		return -1;
-	}
-}
-
-TxStatus transmit_frame(uint8* frame, int f_len, _Bool ranging){
-	/* Write frame data to DW1000 and prepare transmission. See NOTE 4 below.*/
-	dwt_writetxdata(f_len, frame, 0); 			/* Zero offset in TX buffer. */
-	dwt_writetxfctrl(f_len, 0, ranging); 		/* Zero offset in TX buffer */
-	dwt_starttx(DWT_START_TX_IMMEDIATE); 	// Start transmission
-
-	/* Poll DW1000 until TX frame sent event set.
-	 * STATUS register is 5 bytes long but, as the event we are looking at is in the first byte of the register, we can use this simplest API
-	 * function to access it.*/
-	while (!(dwt_read32bitreg(SYS_STATUS_ID) & SYS_STATUS_TXFRS)){ };
-	dwt_write32bitreg(SYS_STATUS_ID, SYS_STATUS_TXFRS); /* Clear TX frame sent event. */
-
-	return TX_SUCCESS;
-}
-
-unsigned long long get_tx_timestamp(void){
-	uint8 data[5];
-	dwt_readtxtimestamp(data);
-	unsigned long long retval;
-
-    for (int i = 4; i >= 0; i--)
-    {
-    	retval <<= 8;
-    	retval |= data[i];
-    }
-    return retval;
-}
-
-unsigned long long get_rx_timestamp(void){
-	uint8 data[5];
-	dwt_readrxtimestamp(data);
-	unsigned long long retval;
-
-    for (int i = 4; i >= 0; i--)
-    {
-    	retval <<= 8;
-    	retval |= data[i];
-    }
-    return retval;
-}
-
-double get_fp_power(dwt_rxdiag_t* diagnostics){
-	double F1 = 1.0 * diagnostics->firstPathAmp1;
-	double F2 = 1.0 * diagnostics->firstPathAmp2;
-	double F3 = 1.0 * diagnostics->firstPathAmp3;
-	double A  = 121.74; // for PRF of 64 MHz (see pg. 45 of DW1000 user manual)
-	double N  = 1.0 * diagnostics->rxPreamCount;
-
-	double retval = ( pow(F1, 2.0) + pow(F2, 2.0) + pow(F3, 2.0) ) / pow(N, 2.0);
-	return 10.0 * log10(retval) - A;
-}
-double get_rx_power(dwt_rxdiag_t* diagnostics){
-	double C = 1.0 * diagnostics->maxGrowthCIR;
-	double A  = 121.74; // for PRF of 64 MHz (see pg. 45 of DW1000 user manual)
-	double N  = 1.0 * diagnostics->rxPreamCount;
-
-	return 10.0 * log10( (C * pow(2.0, 17.0))/ pow(N, 2.0)) - A;
-}
-double get_fp_snr(dwt_rxdiag_t* diagnostics){
-	return (double)(1.0 * diagnostics->firstPathAmp2) / (1.0 * diagnostics->stdNoise);
-}
-
-int16 get_confidence(double rx_pwr, double fp_pwr, double SNR){
-	double conf = K1*(6 - rx_pwr + fp_pwr) + K2*SNR;
-	return (int16) conf;
-}
-
-void u_delay(int usec){
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
-	__NOP();
 }
 
 /* USER CODE END 4 */
@@ -891,8 +1057,8 @@ void u_delay(int usec){
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-
+	/* User can add his own implementation to report the HAL error return state */
+	debug(&huart1, "Error occurred\r");
   /* USER CODE END Error_Handler_Debug */
 }
 
@@ -907,7 +1073,7 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 { 
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
+	/* User can add his own implementation to report the file name and line number,
      tex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }

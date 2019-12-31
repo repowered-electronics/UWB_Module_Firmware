@@ -410,20 +410,20 @@ void port_set_dw1000_fastrate(void)
  * @brief   IRQ HAL call-back for all EXTI configured lines
  *          i.e. DW_RESET_Pin and DW_IRQn_Pin
  * */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-    if (GPIO_Pin == DW_RESET_Pin)
-    {
-        signalResetDone = 1;
-    }
-    else if (GPIO_Pin == DW_IRQn_Pin)
-    {
-        process_deca_irq();
-    }
-    else
-    {
-    }
-}
+//void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+//{
+//    if (GPIO_Pin == DW_RESET_Pin)
+//    {
+//        signalResetDone = 1;
+//    }
+//    else if (GPIO_Pin == DW_IRQn_Pin)
+//    {
+//        process_deca_irq();
+//    }
+//    else
+//    {
+//    }
+//}
 
 /* @fn      process_deca_irq
  * @brief   main call-back for processing of DW1000 IRQ

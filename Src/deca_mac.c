@@ -40,3 +40,7 @@ uint16_t get_src_panid(uint8_t* buffer){
 	retval |= buffer[8] << 8;
 	return retval;
 }
+
+uint8_t get_mac_frame_type(uint8_t* buffer){
+	return (buffer[0] & 0x07); // first 3 bits of low-order octet
+}
