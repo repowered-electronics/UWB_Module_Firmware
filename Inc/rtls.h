@@ -19,7 +19,11 @@
 
 #define TX_BUFFER_SIZE 		1024
 
-#define MAX_NUMBER_OF_ANCHORS 7
+/* how many anchors to store in our list */
+#define ANCHOR_LIST_SIZE 		16
+
+/* max number to be ranging with (restricted by our comm buffer size) */
+#define MAX_NUMBER_OF_ANCHORS 	7
 
 /* Index to access to sequence number of the blink frame in the tx_msg array. */
 #define BLINK_FRAME_SN_IDX 	1
@@ -93,7 +97,7 @@ typedef enum STATE {
 	WAIT_FOR_POLL,
 	WAIT_FOR_RESPONSE,
 	WAIT_FOR_FINAL,
-	WAIT_FOR_DATA,
+	WAIT_FOR_DATA
 }state_t;
 
 typedef enum TX_STATUS {
@@ -109,6 +113,7 @@ typedef enum RX_STATUS {
 
 typedef struct state_data {
 	state_t state;
+	state_t last_state;
 	uint8_t mode;
 	uint16_t self_id; 		// id of self
 	uint8_t channel; 		// UWB channel
@@ -187,8 +192,11 @@ void u_delay(int usec);
 uint8 rtls_make_mac_header(state_data_t* state, uint8 frame_type);
 AnchorData get_anchor_from_frame(uint8_t* buffer);
 float get_distance(point_t a, point_t b);
+void init_anchor_array(AnchorData* anchors, int len);
 int rx_power_comparator(const void* p1, const void* p2);
+int rx_qual_comp(const void* p1, const void* p2);
 void sort_anchors_by_rx_power(AnchorData* anchors, int size);
+void sort_anchors_by_rx_qual(AnchorData* anchors, int size);
 void add_new_anchor(state_data_t* state, AnchorData new_anchor);
 int remove_dead_anchors(AnchorData* anchors, int len);
 

@@ -8,7 +8,7 @@
 
 
 
-int process_packet(uint8_t* pack_in, uint8_t* pack_out, CONFIG_FIELD_TYPE* fields){
+int process_packet(uint8_t* pack_in, uint8_t* pack_out, CONFIG_FIELD_TYPE* fields, state_data_t* state){
 	int ind = 0;
 	int retval = PACKET_OK;
 	switch(pack_in[0]){
@@ -25,11 +25,10 @@ int process_packet(uint8_t* pack_in, uint8_t* pack_out, CONFIG_FIELD_TYPE* field
 		break;}
 	case CMD_READ_ANCHORS:{
 		pack_out[ind++] = pack_in[0];
-		uint32_t num_anchors = 0;
-		get_field(fields, FIELD_NUMBER_OF_ANCHORS, (void*)num_anchors);
-		int size = serialize_anchor_data(pack_out + HDDR_LEN, anchor_data, num_anchors);
-		pack_out[ind++] = size; // length of the body
-		ind += size;
+		//get_field(fields, FIELD_NUMBER_OF_ANCHORS, (void*)num_anchors);
+		int body_size = serialize_anchor_data(pack_out + HDDR_LEN, state->anchors, state->num_anchors);
+		pack_out[ind++] = body_size; // length of the body
+		ind += body_size;
 		pack_out[ind] = STOP_BYTE;
 		break;}
 	case CMD_SET_CONFIG:{
@@ -121,7 +120,7 @@ void save_fields_to_eeprom(CONFIG_FIELD_TYPE* fields){
 //	}
 	EE_Format();
 	eeprom_data[0] = EEPROM_FLAG;
-	memcpy(eeprom_data + 1, fields, FIELD_SIZE*NUM_FIELDS + sizeof(eeprom_data[0]));
+	memcpy(eeprom_data + 1, fields, FIELD_SIZE*NUM_FIELDS);
 	EE_Writes(0, NUM_FIELDS + 1, eeprom_data);
 //	EE_Write(FIELD_SELF_ID + 1, eeprom_data);
 //	memcpy(&eeprom_data, fields + FIELD_MODE*FIELD_SIZE, FIELD_SIZE);

@@ -31,6 +31,7 @@
 #define DFLT_CHANNEL 			(uint8_t)2
 #define DFLT_SAMPLES_PER_RANGE 	3
 #define DFLT_NUMBER_OF_ANCHORS 	5
+#define DFLT_RANGING_PERIOD 	50
 
 
 enum CMD_TYPES {
@@ -61,7 +62,7 @@ enum PROCESS_PACKET_STATUS {
 };
 AnchorData* anchor_data;
 
-uint8_t usb_rx_buffer[512];
+uint8_t usb_rx_buffer[INPUT_BUFFER_SIZE];
 
 void init_field_memory(CONFIG_FIELD_TYPE* fields);
 void read_config_from_eeprom(CONFIG_FIELD_TYPE* config);
@@ -70,6 +71,6 @@ void set_field(CONFIG_FIELD_TYPE* fields, int field_id, void* value);
 void get_field(CONFIG_FIELD_TYPE* fields, int field_id, void* value);
 int serialize_device_config(void* self_data, void* config);
 int serialize_anchor_data(void* anchor_data, AnchorData* anchor_list, int list_size);
-int process_packet(uint8_t* pack_in, uint8_t* pack_out, CONFIG_FIELD_TYPE* fields);
+int process_packet(uint8_t* pack_in, uint8_t* pack_out, CONFIG_FIELD_TYPE* fields, state_data_t* state);
 
 #endif

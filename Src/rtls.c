@@ -244,7 +244,7 @@ TxStatus transmit_frame(uint8* frame, int f_len, _Bool ranging){
 unsigned long long get_tx_timestamp(void){
 	uint8 data[5];
 	dwt_readtxtimestamp(data);
-	unsigned long long retval;
+	unsigned long long retval = 0;
 
 	for (int i = 4; i >= 0; i--)
 	{
@@ -257,7 +257,7 @@ unsigned long long get_tx_timestamp(void){
 unsigned long long get_rx_timestamp(void){
 	uint8 data[5];
 	dwt_readrxtimestamp(data);
-	unsigned long long retval;
+	unsigned long long retval = 0;
 
 	for (int i = 4; i >= 0; i--)
 	{
@@ -402,17 +402,16 @@ void add_new_anchor(state_data_t* state, AnchorData new_anchor){
 			break;
 		}
 	}
-	state->anchors[i] = new_anchor; // add to the end
 
-	if(i >= state->num_anchors)
+	if(i >= state->num_anchors){
 		state->num_anchors++; // increment to reflect the new number of anchors
-
-	if(state->num_anchors > MAX_NUMBER_OF_ANCHORS){
-		state->num_anchors = MAX_NUMBER_OF_ANCHORS;
-		sort_anchors_by_rx_power(state->anchors, state->num_anchors + 1); // number to sort is MAX + 1
-	}else{
-		sort_anchors_by_rx_power(state->anchors, state->num_anchors);
+		if(state->num_anchors > ANCHOR_LIST_SIZE){
+			state->num_anchors = ANCHOR_LIST_SIZE;
+			i = state->num_anchors - 1; // make sure we're putting new anchor at the end
+		}
 	}
+	state->anchors[i] = new_anchor; // place anchor in list
+	//sort_anchors_by_rx_power(state->anchors, state->num_anchors);
 
 }
 /**
@@ -459,10 +458,44 @@ int rx_power_comparator(const void* p1, const void* p2){
 		return 0;
 	}
 }
+/**
+ * Return value meaning
+ * <0 The element pointed by p1 goes before the element pointed by p2
+ * 0  The element pointed by p1 is equivalent to the element pointed by p2
+ * >0 The element pointed by p1 goes after the element pointed by p2
+ */
+int rx_qual_comp(const void* p1, const void* p2){
+	float rx_a = ((AnchorData*)p1)->rx_power;
+	float rx_b = ((AnchorData*)p2)->rx_power;
+	float fp_a = ((AnchorData*)p1)->fp_power;
+	float fp_b = ((AnchorData*)p2)->fp_power;
+	float snr_a = ((AnchorData*)p1)->fp_snr;
+	float snr_b = ((AnchorData*)p2)->fp_snr;
+
+	int retval = 0;
+
+	if( (rx_a - fp_a) < (rx_b - fp_b) ){
+		retval -= 1;
+	}else if( (rx_a - fp_a) > (rx_b - fp_b) ){
+		retval += 1;
+	}
+
+	if(snr_a > snr_b){
+		retval -= 1;
+	}else if(snr_a < snr_b){
+		retval += 1;
+	}
+	return retval;
+}
 
 void sort_anchors_by_rx_power(AnchorData* anchors, int size){
 	//void qsort (void* base, size_t num, size_t size, int (*comparator)(const void*,const void*));
 	qsort((void*)anchors, size, sizeof(AnchorData), rx_power_comparator);
+}
+
+void sort_anchors_by_rx_qual(AnchorData* anchors, int size){
+	//void qsort (void* base, size_t num, size_t size, int (*comparator)(const void*,const void*));
+	qsort((void*)anchors, size, sizeof(AnchorData), rx_qual_comp);
 }
 
 void u_delay(int usec){
